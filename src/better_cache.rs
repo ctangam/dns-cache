@@ -84,4 +84,99 @@ impl BetterCache {
             })
             .unwrap_or_default()
     }
+
+    pub fn prune(&mut self) -> usize {
+        if self.current_size <= self.desired_size {
+            return 0;
+        }
+
+        let mut pruned = self.remove_expired();
+
+        while self.current_size > self.desired_size {
+            pruned += self.remove_least_recently_used();
+        }
+
+        pruned
+    }
+
+    fn remove_least_recently_used(&mut self) -> usize {
+        if let Some((name, _)) = self.access_priority.pop() {
+            self.expiry_priority.remove(&name);
+
+            if let Some(entry) = self.entries.remove(&name) {
+                let pruned = entry.size;
+                self.current_size -= pruned;
+                pruned
+            } else {
+                0
+            }
+        } else {
+            0
+        }
+    }
+
+    fn remove_expired(&mut self) -> usize {
+        let mut pruned = 0;
+        
+        loop {
+            let before = pruned;
+            pruned += self.remove_expired_step();
+            if before == pruned {
+                break;
+            }
+        }
+        pruned
+    }
+
+    fn remove_expired_step(&mut self) -> usize {
+        if let Some((name, Reverse(expiry))) = self.expiry_priority.pop() {
+            let now = Instant::now();
+
+            if expiry > now {
+                self.expiry_priority.push(name, Reverse(expiry));
+                return 0;
+            }
+
+            if let Some(entry) = self.entries.get_mut(&name) {
+                let mut pruned = 0;
+
+                let rtypes = entry.records.keys().cloned().collect::<Vec<_>>();
+                let mut next_expiry = None;
+
+                for rtype in rtypes {
+                    if let Some(tuples) = entry.records.get_mut(&rtype) {
+                        let len = tuples.len();
+                        tuples.retain(|(_, _, expiry)| expiry > &now);
+                        pruned += len - tuples.len();
+                        for (_, _, expiry) in tuples {
+                            match next_expiry {
+                                None => next_expiry = Some(*expiry),
+                                Some(t) if *expiry < t => next_expiry = Some(*expiry),
+                                _ => (),
+                            }
+                        }
+                    }
+                }
+
+                entry.size -= pruned;
+
+                if let Some(ne) = next_expiry {
+                    entry.next_expiry = ne;
+                    self.expiry_priority.push(name, Reverse(ne));
+                } else {
+                    self.entries.remove(&name);
+                    self.access_priority.remove(&name);
+                }
+                
+                self.current_size -= pruned;
+                pruned
+            } else {
+                self.access_priority.remove(&name);
+                0
+            }
+        } else {
+            0
+        }
+    }
+
 }
