@@ -21,6 +21,8 @@ impl SimpleCache {
     }
 
     pub fn get(&self, name: &DomainName, qtype: QueryType, qclass: QueryClass) -> Vec<ResourceRecord> {
+        let now = Instant::now();
+        
         self.entries
             .get(name)
             .into_iter()
@@ -30,7 +32,7 @@ impl SimpleCache {
                 name: name.clone(),
                 rtype: rtype.clone(),
                 rclass: *rclass,
-                ttl: expires.saturating_duration_since(Instant::now()),
+                ttl: expires.saturating_duration_since(now),
             })
             .collect()
     }
