@@ -167,7 +167,7 @@ impl BetterCache {
                     self.entries.remove(&name);
                     self.access_priority.remove(&name);
                 }
-                
+
                 self.current_size -= pruned;
                 pruned
             } else {
@@ -179,4 +179,65 @@ impl BetterCache {
         }
     }
 
+    pub fn insert(&mut self, record: &ResourceRecord) {
+        let now = Instant::now();
+        let rtype = record.rtype.rtype();
+        let expiry = now + record.ttl;
+        let tuple = (record.rtype.clone(), record.rclass, expiry);
+        if let Some(entry) = self.entries.get_mut(&record.name) {
+            if let Some(tuples) = entry.records.get_mut(&rtype) {
+                let mut duplicate_expires_at = None;
+                for i in 0..tuples.len() {
+                    let t = &tuples[i];
+                    if t.0 == tuple.0 && t.1 == tuple.1 {
+                        duplicate_expires_at = Some(t.2);
+                        tuples.swap_remove(i);
+                        break;
+                    }
+                }
+
+                tuples.push(tuple);
+
+                if let Some(dup_expiry) = duplicate_expires_at {
+                    entry.size -= 1;
+                    self.current_size -= 1;
+
+                    if dup_expiry == entry.next_expiry {
+                        let mut new_next_expiry = expiry;
+                        for (_, _, e) in tuples {
+                            if *e < new_next_expiry {
+                                new_next_expiry = *e
+                            }
+                        }
+                        entry.next_expiry = new_next_expiry;
+                        self.expiry_priority.change_priority(&record.name, Reverse(entry.next_expiry));
+                    }
+                }
+            } else {
+                entry.records.insert(rtype, vec![tuple]);
+            }
+
+            entry.last_read = now;
+            entry.size += 1;
+            self.access_priority.change_priority(&record.name, Reverse(entry.last_read));
+            if expiry < entry.next_expiry {
+                entry.next_expiry = expiry;
+                self.expiry_priority.change_priority(&record.name, Reverse(expiry));
+            }
+        } else {
+            let mut records = HashMap::new();
+            records.insert(rtype, vec![tuple]);
+            let entry = CachedDomainRecords {
+                last_read: now,
+                next_expiry: expiry,
+                size: 1,
+                records,
+            };
+            self.entries.insert(record.name.clone(), entry);
+            self.access_priority.push(record.name.clone(), Reverse(now));
+            self.expiry_priority.push(record.name.clone(), Reverse(expiry));
+        }
+
+        self.current_size += 1;
+    }
 }
